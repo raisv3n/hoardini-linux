@@ -1,0 +1,24 @@
+[package]
+name = "hoardini-core"
+description = "Download engine shared by the Hoardini app, command-line tool and browser host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+chrono.workspace = true
+dirs.workspace = true
+futures-util.workspace = true
+libc.workspace = true
+percent-encoding.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,17 @@
+[package]
+name = "hoardini-cli"
+description = "The hoardini command: segmented, resumable downloads from the terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "hoardini"
+path = "src/main.rs"
+
+[dependencies]
+hoardini-core.workspace = true
+tokio.workspace = true
+url.workspace = true

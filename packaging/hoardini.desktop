@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Hoardini
+GenericName=Download Manager
+Comment=Fast, resumable downloads and video saving, with a Firefox extension
+Exec=hoardini-app
+Icon=hoardini
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=download;video;hls;m3u8;resume;
+StartupWMClass=hoardini
+SingleMainWindow=true

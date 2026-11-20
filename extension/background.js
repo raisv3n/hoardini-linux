@@ -1,0 +1,259 @@
+// Firefox port of the Hoardini Chrome extension's service worker (an event page here).
+const HOST = "com.hoardini.host";
+
+// ---------- hand-off to the native host ----------
+
+// Like the browser, SameSite=Strict cookies only go along when the request starts on the cookie's own site
+// (a page must not be able to make Hoardini fetch another site's URL with them). No referrer: not sent.
+function fromCookieSite(cookie, referrer) {
+  let host;
+  try { host = new URL(referrer).hostname; } catch { return false; }
+  const domain = cookie.domain.replace(/^\./, "");
+  return host === domain || host.endsWith("." + domain);
+}
+
+// Cookies from the same container (Multi-Account Containers) the page or download used.
+async function cookieHeader(url, referrer, storeId) {
+  const query = { url, ...(storeId ? { storeId } : {}) };
+  let cookies;
+  try {
+    cookies = await browser.cookies.getAll(query);
+  } catch {
+    // First-party isolation is on: the query must name a first-party domain (null = all of them).
+    cookies = await browser.cookies.getAll({ ...query, firstPartyDomain: null }).catch(() => []);
+  }
+  return cookies.filter(c => c.sameSite !== "strict" || fromCookieSite(c, referrer))
+    .map(c => `${c.name}=${c.value}`).join("; ");
+}
+
+async function sendToHoardini({ url, referrer, kind = "file", filename = "", variant = "", audio = "", storeId }) {
+  const res = await browser.runtime.sendNativeMessage(HOST, {
+    url, referrer: referrer || "", kind, filename, variant, audio,
+    cookies: await cookieHeader(url, referrer, storeId),
+    userAgent: navigator.userAgent,
+  });
+  if (!res || !res.ok) throw new Error(res ? res.error : "no response from Hoardini");
+}
+
+async function enabled() {
+  const { intercept = true } = await browser.storage.local.get("intercept");
+  return intercept;
+}
+
+// ---------- browser download capture ----------
+
+// Only videos are taken from the browser. Everything else (.deb, .AppImage, .tar.gz, .zip, .pdf, …) stays a
+// normal Firefox download.
+const VIDEO_EXT = /\.(mp4|m4v|webm|mov|mkv|avi|wmv|flv|mpe?g|3gp|ogv)$/i;
+const GENERIC_MIME = /^(|application\/octet-stream|binary\/octet-stream|application\/force-download|application\/download|application\/x-download)$/i;
+
+function extOf(name) {
+  const m = (name || "").match(/(\.[a-z0-9]{1,5})$/i);
+  return m ? m[1] : "";
+}
+
+// true = video, false = not a video, null = can't tell yet (generic MIME type and no file name so far).
+function isVideoDownload(item) {
+  const mime = (item.mime || "").split(";")[0].trim().toLowerCase();
+  if (mime.startsWith("video/")) return true;
+  if (!GENERIC_MIME.test(mime)) return false;
+  const base = (item.filename || "").split(/[\\/]/).pop();
+  let path = "";
+  try { path = new URL(item.finalUrl || item.url).pathname; } catch {}
+  for (const ext of [extOf(base), extOf(path)]) {
+    if (ext) return VIDEO_EXT.test(ext);
+  }
+  return null;
+}
+
+async function takeOver(item) {
+  const url = item.finalUrl || item.url;
+  try {
+    await browser.downloads.cancel(item.id);
+    await browser.downloads.erase({ id: item.id });
+    await sendToHoardini({ url, referrer: item.referrer, storeId: item.cookieStoreId });
+  } catch (e) {
+    // Host missing or failed: restart the download in the browser so nothing is lost.
+    console.warn("Hoardini hand-off failed, falling back to Firefox:", e);
+    browser.downloads.download({ url, ...(item.cookieStoreId ? { cookieStoreId: item.cookieStoreId } : {}) })
+      .catch(() => browser.downloads.download({ url }));
+  }
+}
+
+// Downloads whose type was unknown at creation, waiting for Firefox to report the file name.
+const undecided = new Set();
+
+browser.downloads.onCreated.addListener(async item => {
+  // Our own fallback downloads (above) stay with Firefox, or a failing hand-off would loop.
+  if (item.byExtensionId === browser.runtime.id) return;
+  if (!(await enabled())) return;
+  const url = item.finalUrl || item.url;
+  if (!/^https?:/i.test(url)) return; // leave blob:/data:/file: alone
+  const video = isVideoDownload(item);
+  if (video === true) await takeOver(item);
+  else if (video === null) undecided.add(item.id);
+});
+
+// The file name (from Content-Disposition) can arrive after onCreated; decide then.
+browser.downloads.onChanged.addListener(async delta => {
+  if (!undecided.has(delta.id) || !delta.filename && !delta.state) return;
+  undecided.delete(delta.id);
+  if (!delta.filename || delta.state?.current === "complete") return;
+  const [item] = await browser.downloads.search({ id: delta.id });
+  if (item && item.state === "in_progress" && isVideoDownload(item) === true) await takeOver(item);
+});
+
+// ---------- media detection ----------
+
+// Not offered: YouTube streams (site terms forbid downloading them outside YouTube's own features).
+const BLOCKED_HOSTS = /(^|\.)(googlevideo\.com|youtube\.com|youtube-nocookie\.com|ytimg\.com)$/i;
+const SEGMENT_EXT = /\.(ts|m4s|aac|cmfv|cmfa)$/i;
+const FILE_EXT = /\.(mp4|m4v|webm|mov|mkv|mp3|m4a|ogg|wav)$/i;
+const MIN_FILE_BYTES = 200 * 1024;
+
+function classify(details, headers) {
+  const url = new URL(details.url);
+  if (BLOCKED_HOSTS.test(url.hostname)) return null;
+  const ct = (headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+  const path = url.pathname;
+
+  if (/\.m3u8$/i.test(path) || ct === "application/vnd.apple.mpegurl" || ct === "application/x-mpegurl") {
+    return { kind: "hls", size: 0 };
+  }
+  if (SEGMENT_EXT.test(path) || ct === "video/mp2t") return null;
+  // DASH players (Facebook, Instagram) fetch pieces of one file as ?bytestart=…&byteend=…; a piece is not a download.
+  if (url.searchParams.has("bytestart") || url.searchParams.has("byteend")) return null;
+
+  const isMedia = ct.startsWith("video/") || ct.startsWith("audio/") || FILE_EXT.test(path);
+  if (!isMedia) return null;
+
+  // Range responses report the real total in Content-Range, not Content-Length.
+  const range = (headers["content-range"] || "").match(/\/(\d+)$/);
+  const size = range ? Number(range[1]) : Number(headers["content-length"] || 0);
+  if (size && size < MIN_FILE_BYTES) return null;
+  return { kind: "file", size };
+}
+
+// Per-tab list lives in session storage (the event page can be unloaded at any time).
+let queue = Promise.resolve();
+function updateTab(tabId, fn) {
+  queue = queue.then(async () => {
+    const key = `media:${tabId}`;
+    const items = (await browser.storage.session.get(key))[key] || [];
+    const next = fn(items);
+    await browser.storage.session.set({ [key]: next });
+    browser.action.setBadgeText({ tabId, text: next.length ? String(next.length) : "" }).catch(() => {});
+    browser.action.setBadgeBackgroundColor({ tabId, color: "#2563eb" }).catch(() => {});
+  }).catch(e => console.error(e));
+  return queue;
+}
+
+// `origin` is the requesting document's origin (an embedded player's, not necessarily the tab's).
+async function addMedia(tabId, url, found, origin) {
+  let tab;
+  try { tab = await browser.tabs.get(tabId); } catch { return; }
+  const referrer = origin ? origin + "/" : tab.url;
+  let isNew = false;
+  await updateTab(tabId, items => {
+    if (items.some(i => i.url === url)) return items;
+    isNew = true;
+    return [...items, { url, kind: found.kind, size: found.size, referrer, title: tab.title || "" }];
+  });
+  if (isNew && found.kind === "hls") await enrichPlaylist(tabId, url);
+}
+
+function originOf(u) {
+  try { const o = new URL(u).origin; return o === "null" ? "" : o; } catch { return ""; }
+}
+
+// onResponseStarted also reports responses served from the HTTP cache (some sites mark their
+// playlists cacheable for an hour, so a second visit to a video would otherwise show nothing).
+browser.webRequest.onResponseStarted.addListener(details => {
+  if (details.tabId < 0 || details.statusCode >= 400) return;
+  const headers = {};
+  for (const h of details.responseHeaders || []) headers[h.name.toLowerCase()] = h.value || "";
+  const found = classify(details, headers);
+  if (found) addMedia(details.tabId, details.url, found, originOf(details.documentUrl || details.originUrl));
+}, { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "other"] }, ["responseHeaders"]);
+
+// Playlists the page itself recorded loading (see popup.js). Catches what webRequest never reported:
+// in-memory cache hits, and pages loaded while the extension was not running.
+async function addPagePlaylists(tabId, urls, origin) {
+  const ok = urls.filter(u => {
+    try {
+      const x = new URL(u);
+      return /^https?:$/.test(x.protocol) && /\.m3u8$/i.test(x.pathname) && !BLOCKED_HOSTS.test(x.hostname);
+    } catch { return false; }
+  });
+  await Promise.all(ok.slice(0, 20).map(u => addMedia(tabId, u, { kind: "hls", size: 0 }, origin)));
+}
+
+// Reads an HLS playlist so the popup can group variants under their master and label qualities.
+function parseMaster(text, base) {
+  const lines = text.split(/\r?\n/).map(l => l.trim());
+  if (!lines.some(l => l.startsWith("#EXT-X-STREAM-INF"))) return null;
+  const variants = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith("#EXT-X-STREAM-INF")) continue;
+    const bw = Number((lines[i].match(/(?:^|[:,])BANDWIDTH=(\d+)/) || [])[1] || 0);
+    const res = (lines[i].match(/RESOLUTION=(\d+)x(\d+)/) || []);
+    const uri = lines.slice(i + 1).find(l => l && !l.startsWith("#"));
+    if (!uri) continue;
+    let url;
+    try { url = new URL(uri, base).href; } catch { continue; }
+    variants.push({ url, bandwidth: bw, height: Number(res[2] || 0),
+      label: res[2] ? `${res[2]}p` : bw ? `${Math.round(bw / 1000)} kbps` : "stream" });
+  }
+  variants.sort((a, b) => b.bandwidth - a.bandwidth || b.height - a.height);
+  return variants;
+}
+
+async function enrichPlaylist(tabId, url) {
+  let variants = null;
+  try {
+    const res = await fetch(url, { credentials: "include" });
+    if (res.ok) variants = parseMaster(await res.text(), url);
+  } catch { /* leave unlabelled */ }
+  await updateTab(tabId, items => items.map(i => i.url === url ? { ...i, variants } : i));
+}
+
+// A new page load starts a fresh list.
+browser.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.status === "loading" && info.url) updateTab(tabId, () => []);
+});
+browser.tabs.onRemoved.addListener(tabId => browser.storage.session.remove(`media:${tabId}`));
+
+browser.runtime.onMessage.addListener(msg => {
+  if (msg.type === "list") {
+    return browser.storage.session.get(`media:${msg.tabId}`).then(r => r[`media:${msg.tabId}`] || []);
+  }
+  if (msg.type === "page-playlists") {
+    return addPagePlaylists(msg.tabId, Array.isArray(msg.urls) ? msg.urls.map(String) : [], String(msg.origin || ""))
+      .then(() => ({ ok: true }), () => ({ ok: false }));
+  }
+  if (msg.type === "download") {
+    const { url, referrer, kind, title, variant, audio, storeId } = msg.item;
+    return sendToHoardini({ url, referrer, kind, filename: title, variant, audio, storeId })
+      .then(() => ({ ok: true }), e => ({ ok: false, error: String(e.message || e) }));
+  }
+  return false;
+});
+
+// ---------- context menu ----------
+
+// Menus of a non-persistent background are kept by Firefox, but recreating them is harmless.
+function createMenus() {
+  browser.menus.removeAll().then(() => browser.menus.create({
+    id: "hoardini-link", title: "Download with Hoardini", contexts: ["link", "video", "audio", "image"],
+  }));
+}
+browser.runtime.onInstalled.addListener(createMenus);
+browser.runtime.onStartup.addListener(createMenus);
+
+browser.menus.onClicked.addListener(async (info, tab) => {
+  const url = info.linkUrl || info.srcUrl;
+  if (!url || !/^https?:/i.test(url)) return;
+  const kind = /\.m3u8(\?|$)/i.test(url) ? "hls" : "file";
+  await sendToHoardini({ url, referrer: tab && tab.url, kind, storeId: tab && tab.cookieStoreId })
+    .catch(e => console.error(e));
+});

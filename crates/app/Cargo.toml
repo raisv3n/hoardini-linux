@@ -1,0 +1,95 @@
+[package]
+name = "hoardini-app"
+description = "Fast download manager with pause, resume, video saving and a Firefox extension"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+hoardini-core.workspace = true
+dirs.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+url.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+egui-phosphor = "0.14"
+image = { version = "0.25", default-features = false, features = ["png"] }
+mime_guess = "2"
+# File picker through the desktop's XDG portal (D-Bus): no GTK needed to build or run.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+# The tray talks to the panel over D-Bus (StatusNotifierItem), so it needs no GTK main loop of its own.
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
+
+[dev-dependencies]
+tempfile = "3"
+egui_kittest = { version = "0.36", default-features = false }
+
+# `cargo deb -p hoardini-app` builds the .deb (see package.sh).
+[package.metadata.deb]
+name = "hoardini"
+maintainer = "raisv3n <15613990+raisv3n@users.noreply.github.com>"
+copyright = "raisv3n"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+Hoardini splits each download into parallel parts, pauses and resumes them (also across restarts), \
+saves HLS (.m3u8) video streams and Facebook videos as one MP4 without re-encoding, and takes over \
+Firefox downloads through its extension. Includes the hoardini command-line tool."""
+section = "net"
+priority = "optional"
+# The window's X11/Wayland, keyboard and OpenGL libraries are loaded at run time, so they're listed by hand.
+depends = "$auto, libx11-6, libxcursor1, libxi6, libxrandr2, libxkbcommon0, libxkbcommon-x11-0, libegl1 | libgl1"
+recommends = "ffmpeg, xdg-utils, xdg-desktop-portal"
+suggests = "firefox | firefox-esr"
+assets = [
+    ["target/release/hoardini-app", "usr/bin/", "755"],
+    ["target/release/hoardini", "usr/bin/", "755"],
+    ["target/release/hoardini-host", "usr/bin/", "755"],
+    ["../../packaging/com.hoardini.host.json", "usr/lib/mozilla/native-messaging-hosts/", "644"],
+    ["../../packaging/hoardini.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/icons/hoardini-48.png", "usr/share/icons/hicolor/48x48/apps/hoardini.png", "644"],
+    ["../../packaging/icons/hoardini-128.png", "usr/share/icons/hicolor/128x128/apps/hoardini.png", "644"],
+    ["../../packaging/icons/hoardini-256.png", "usr/share/icons/hicolor/256x256/apps/hoardini.png", "644"],
+    ["../../packaging/icons/hoardini-512.png", "usr/share/icons/hicolor/512x512/apps/hoardini.png", "644"],
+    ["../../extension/manifest.json", "usr/share/hoardini/extension/", "644"],
+    ["../../extension/background.js", "usr/share/hoardini/extension/", "644"],
+    ["../../extension/popup.html", "usr/share/hoardini/extension/", "644"],
+    ["../../extension/popup.js", "usr/share/hoardini/extension/", "644"],
+    ["../../extension/fb.js", "usr/share/hoardini/extension/", "644"],
+    ["../../extension/icons/16.png", "usr/share/hoardini/extension/icons/", "644"],
+    ["../../extension/icons/32.png", "usr/share/hoardini/extension/icons/", "644"],
+    ["../../extension/icons/48.png", "usr/share/hoardini/extension/icons/", "644"],
+    ["../../extension/icons/128.png", "usr/share/hoardini/extension/icons/", "644"],
+    ["../../README.md", "usr/share/doc/hoardini/", "644"],
+]
+
+# The same package plus the Mozilla-signed extension (dist/hoardini.xpi), which Firefox can install for good.
+[package.metadata.deb.variants.signed]
+name = "hoardini"
+assets = [
+    ["target/release/hoardini-app", "usr/bin/", "755"],
+    ["target/release/hoardini", "usr/bin/", "755"],
+    ["target/release/hoardini-host", "usr/bin/", "755"],
+    ["../../packaging/com.hoardini.host.json", "usr/lib/mozilla/native-messaging-hosts/", "644"],
+    ["../../packaging/hoardini.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/icons/hoardini-48.png", "usr/share/icons/hicolor/48x48/apps/hoardini.png", "644"],
+    ["../../packaging/icons/hoardini-128.png", "usr/share/icons/hicolor/128x128/apps/hoardini.png", "644"],
+    ["../../packaging/icons/hoardini-256.png", "usr/share/icons/hicolor/256x256/apps/hoardini.png", "644"],
+    ["../../packaging/icons/hoardini-512.png", "usr/share/icons/hicolor/512x512/apps/hoardini.png", "644"],
+    ["../../extension/manifest.json", "usr/share/hoardini/extension/", "644"],
+    ["../../extension/background.js", "usr/share/hoardini/extension/", "644"],
+    ["../../extension/popup.html", "usr/share/hoardini/extension/", "644"],
+    ["../../extension/popup.js", "usr/share/hoardini/extension/", "644"],
+    ["../../extension/fb.js", "usr/share/hoardini/extension/", "644"],
+    ["../../extension/icons/16.png", "usr/share/hoardini/extension/icons/", "644"],
+    ["../../extension/icons/32.png", "usr/share/hoardini/extension/icons/", "644"],
+    ["../../extension/icons/48.png", "usr/share/hoardini/extension/icons/", "644"],
+    ["../../extension/icons/128.png", "usr/share/hoardini/extension/icons/", "644"],
+    ["../../README.md", "usr/share/doc/hoardini/", "644"],
+    ["../../target/xpi/hoardini.xpi", "usr/share/hoardini/", "644"],
+]

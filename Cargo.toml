@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/cli", "crates/host", "crates/app"]
+
+[workspace.package]
+version = "0.5.10"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/raisv3n/hoardini-linux"
+
+[workspace.dependencies]
+hoardini-core = { path = "crates/core" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dirs = "6"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+libc = "0.2"
+percent-encoding = "2"
+# rustls only (no OpenSSL to link against); certificates from the system store, with Mozilla's roots as a fallback.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "http2", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "fs", "io-util", "signal"] }
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+lto = "thin"
+strip = true

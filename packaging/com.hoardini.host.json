@@ -1,0 +1,7 @@
+{
+  "name": "com.hoardini.host",
+  "description": "Hoardini native host",
+  "path": "/usr/bin/hoardini-host",
+  "type": "stdio",
+  "allowed_extensions": ["hoardini@raisv3n"]
+}

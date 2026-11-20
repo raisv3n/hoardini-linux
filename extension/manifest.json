@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "Hoardini",
+  "version": "0.4.6",
+  "description": "Send downloads and videos to Hoardini for fast, segmented downloading.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "hoardini@raisv3n",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  },
+  "permissions": [
+    "downloads",
+    "menus",
+    "nativeMessaging",
+    "cookies",
+    "storage",
+    "webRequest",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_title": "Hoardini",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.facebook.com/*"],
+      "js": ["fb.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}
