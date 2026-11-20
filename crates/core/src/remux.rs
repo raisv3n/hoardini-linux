@@ -72,9 +72,40 @@ fn os(args: &[&dyn AsRef<std::ffi::OsStr>]) -> Vec<OsString> {
     args.iter().map(|a| a.as_ref().to_owned()).collect()
 }
 
+/// The ffmpeg demuxer for a file Hoardini wrote or converts, by extension. Inputs never go to ffmpeg's
+/// content sniffing: a server could send a playlist or other container named `.ts`, and ffmpeg would
+/// then follow what it points to.
+pub fn demuxer(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "ts" | "mts" | "m2ts" => "mpegts",
+        "mp4" | "m4a" | "m4v" | "mov" => "mov",
+        "aac" => "aac",
+        "mp3" => "mp3",
+        "ac3" => "ac3",
+        "ec3" => "eac3",
+        _ => return None,
+    })
+}
+
+/// `-f <demuxer> -i file:<path>`: a fixed demuxer, and the file protocol whatever the name looks like.
+fn input(path: &Path) -> Result<Vec<OsString>> {
+    let format = demuxer(path).ok_or(Error::Unreadable)?;
+    let mut file = OsString::from("file:");
+    file.push(path.as_os_str());
+    Ok(vec!["-f".into(), format.into(), "-i".into(), file])
+}
+
+fn output(path: &Path) -> OsString {
+    let mut file = OsString::from("file:");
+    file.push(path.as_os_str());
+    file
+}
+
 /// Copies the audio/video streams of `source` into an MP4 next to it, without re-encoding.
 pub async fn to_mp4(source: &Path) -> Result<PathBuf> {
-    if !source.is_file() {
+    // Only MPEG-TS is converted (see model::CONVERTIBLE in the app).
+    if !source.is_file() || demuxer(source) != Some("mpegts") {
         return Err(Error::Unreadable);
     }
     if ffmpeg_path().is_none() {
@@ -87,11 +118,11 @@ pub async fn to_mp4(source: &Path) -> Result<PathBuf> {
     let _ = fs::remove_file(&tmp);
     let mut guard = RemoveOnDrop(&tmp, false);
     #[rustfmt::skip]
-    let args = os(&[
-        &"-i", &source, &"-map", &"0:v?", &"-map", &"0:a?", &"-c", &"copy",
+    let args = [input(source)?, os(&[
+        &"-map", &"0:v?", &"-map", &"0:a?", &"-c", &"copy",
         // Index at the front: instant seeking.
-        &"-movflags", &"+faststart", &"-f", &"mp4", &tmp,
-    ]);
+        &"-movflags", &"+faststart", &"-f", &"mp4", &output(&tmp),
+    ])].concat();
     ffmpeg(args).await?;
     fs::rename(&tmp, &final_path)?;
     guard.1 = true;
@@ -103,10 +134,10 @@ pub async fn to_mp4(source: &Path) -> Result<PathBuf> {
 pub async fn merge(video: &Path, audio: &Path, output: &Path) -> Result<()> {
     let mut guard = RemoveOnDrop(output, false);
     #[rustfmt::skip]
-    let args = os(&[
-        &"-i", &video, &"-i", &audio, &"-map", &"0:v:0", &"-map", &"1:a:0", &"-c", &"copy",
-        &"-movflags", &"+faststart", &"-f", &"mp4", &output,
-    ]);
+    let args = [input(video)?, input(audio)?, os(&[
+        &"-map", &"0:v:0", &"-map", &"1:a:0", &"-c", &"copy",
+        &"-movflags", &"+faststart", &"-f", &"mp4", &self::output(output),
+    ])].concat();
     ffmpeg(args).await?;
     guard.1 = true;
     Ok(())

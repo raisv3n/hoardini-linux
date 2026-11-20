@@ -1377,7 +1377,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hoardini-app"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "chrono",
  "dirs",
@@ -1400,7 +1400,7 @@ dependencies = [
 
 [[package]]
 name = "hoardini-cli"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "hoardini-core",
  "tokio",
@@ -1409,7 +1409,7 @@ dependencies = [
 
 [[package]]
 name = "hoardini-core"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "chrono",
  "dirs",
@@ -1427,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "hoardini-host"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "hoardini-core",
  "libc",

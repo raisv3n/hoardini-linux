@@ -8,6 +8,8 @@ pub enum Error {
     SizeMismatch { expected: u64, got: u64 },
     #[error("Cannot create a destination file in {0}")]
     CannotWrite(String),
+    #[error("The server sent more data than expected")]
+    TooLarge,
     #[error("Too many redirects")]
     TooManyRedirects,
     #[error("Could not read the HLS playlist")]

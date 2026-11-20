@@ -132,7 +132,7 @@ in the `.deb` and the tarball when it's there.
 
 ### Releasing
 
-Bump `version` in the root `Cargo.toml` and push a matching tag (`git tag v0.5.10 && git push origin v0.5.10`).
+Bump `version` in the root `Cargo.toml` and push a matching tag (`git tag v0.5.11 && git push origin v0.5.11`).
 The [release workflow](.github/workflows/release.yml) tests, packages and publishes the `.deb`, the tarball,
 the signed extension (when the AMO secrets are set) and their SHA-256 checksums.
 

@@ -205,6 +205,35 @@ async fn hls_master_picks_variant_and_byteranges() {
 }
 
 #[tokio::test]
+async fn hls_byteranges_from_a_server_without_range_support() {
+    let all = data(300_000, 8);
+    let playlist = "#EXTM3U\n#EXTINF:2,\n#EXT-X-BYTERANGE:100000@0\nall.ts\n#EXTINF:2,\n#EXT-X-BYTERANGE:150000\nall.ts\n\
+        #EXTINF:2,\n#EXT-X-BYTERANGE:50000\nall.ts\n#EXT-X-ENDLIST\n";
+    let srv = Server::start(vec![("/r/p.m3u8", Route::text(playlist)), ("/r/all.ts", Route::no_ranges(all.clone()))]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let out = HlsDownloader::new(srv.url("/r/p.m3u8"), dir.path(), vec![], Some("r".into()), None).run(quiet()).await.unwrap();
+    assert_eq!(fs::read(out).unwrap(), all, "each segment is cut out of the whole file");
+}
+
+#[tokio::test]
+async fn hls_limits_what_it_holds_in_memory() {
+    let big = format!("#EXTM3U\n{}", "#EXT-X-PLACEHOLDER\n".repeat(1_000_000)); // > 16 MB
+    let huge_range = "#EXTM3U\n#EXTINF:2,\n#EXT-X-BYTERANGE:600000000@0\nall.ts\n#EXT-X-ENDLIST\n";
+    let srv = Server::start(vec![
+        ("/big.m3u8", Route::text(&big)),
+        ("/huge.m3u8", Route::text(huge_range)),
+        ("/all.ts", Route::file(data(1000, 9))),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let r = HlsDownloader::new(srv.url("/big.m3u8"), dir.path(), vec![], None, None).run(quiet()).await;
+    assert!(matches!(r, Err(Error::BadPlaylist)), "{r:?}");
+    let r = HlsDownloader::new(srv.url("/huge.m3u8"), dir.path(), vec![], None, None).run(quiet()).await;
+    assert!(matches!(r, Err(Error::TooLarge)), "{r:?}");
+    assert!(srv.requests("/all.ts").is_empty(), "an oversized segment is refused before downloading");
+}
+
+#[tokio::test]
 async fn hls_rejects_encrypted_and_live() {
     let srv = Server::start(vec![
         ("/e.m3u8", Route::text("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXTINF:2,\na.ts\n#EXT-X-ENDLIST\n")),
@@ -274,7 +303,7 @@ async fn pair_needs_ffmpeg_or_merges() {
     let srv = Server::start(vec![]).await;
     let dir = tempfile::tempdir().unwrap();
     if remux::ffmpeg_path().is_some() {
-        return; // covered by the ffmpeg tests
+        return; // covered by tests/remux.rs
     }
     let r = PairDownloader::new(srv.url("/v.mp4"), srv.url("/a.mp4"), dir.path(), vec![], None).run(quiet()).await;
     assert!(matches!(r, Err(Error::FfmpegMissing)));

@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a tag like v0.5.10 builds Hoardini, attaches the .deb, the tarball and (when the AMO secrets
+# Pushing a tag like v0.5.11 builds Hoardini, attaches the .deb, the tarball and (when the AMO secrets
 # are set) the Mozilla-signed extension to a GitHub release with SHA-256 checksums, and records a
 # signed build-provenance attestation for the files.
 on:

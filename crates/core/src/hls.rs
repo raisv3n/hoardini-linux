@@ -88,7 +88,8 @@ fn byte_range(spec: &str) -> Option<(u64, Option<u64>)> {
 
 pub fn parse(text: &str, base: &Url) -> Parsed {
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    let resolve = |s: &str| base.join(s).ok();
+    // Only http(s): a playlist must not point Hoardini at file:// or other schemes.
+    let resolve = |s: &str| base.join(s).ok().filter(|u| matches!(u.scheme(), "http" | "https"));
 
     if lines.iter().any(|l| l.starts_with("#EXT-X-STREAM-INF")) {
         let mut variants = Vec::new();
@@ -240,7 +241,10 @@ impl SegmentCounter {
 }
 
 const PARALLEL: usize = 6;
-const MAX_PLAYLIST: usize = 16 << 20;
+const MAX_PLAYLIST: u64 = 16 << 20;
+/// A media segment is held in memory until it is written (six at a time), so a server can't make it
+/// unbounded. Real segments are a few MB; a whole-file "segment" this large is not a stream we can buffer.
+pub const MAX_SEGMENT: u64 = 512 << 20;
 
 pub struct HlsDownloader {
     pub url: Url,
@@ -416,42 +420,70 @@ impl HlsDownloader {
     }
 
     async fn fetch_text(&self, u: &Url) -> Result<String> {
-        let data = self.fetch_bytes(u, None).await?;
-        if data.len() > MAX_PLAYLIST {
-            return Err(Error::BadPlaylist);
-        }
+        let data = self.fetch_bytes(u, None, MAX_PLAYLIST).await.map_err(|e| match e {
+            Error::TooLarge => Error::BadPlaylist,
+            e => e,
+        })?;
         Ok(String::from_utf8_lossy(&data).into_owned())
     }
 
     async fn fetch(&self, s: &Segment) -> Result<Vec<u8>> {
-        self.fetch_bytes(&s.url, s.range).await
+        self.fetch_bytes(&s.url, s.range, MAX_SEGMENT).await
     }
 
-    async fn fetch_bytes(&self, u: &Url, range: Option<(u64, u64)>) -> Result<Vec<u8>> {
+    /// The body of `u` (or the byte range `[a, b)` of it), never holding more than `limit` bytes.
+    async fn fetch_bytes(&self, u: &Url, range: Option<(u64, u64)>, limit: u64) -> Result<Vec<u8>> {
+        if range.is_some_and(|(a, b)| b - a > limit) {
+            return Err(Error::TooLarge);
+        }
         with_retries(|| async {
             let header = range.map(|(a, b)| format!("bytes={a}-{}", b - 1));
-            let resp = net::get(&self.client, u, &self.headers, &self.url, header).await?;
+            let mut resp = net::get(&self.client, u, &self.headers, &self.url, header).await?;
             let status = resp.status();
             if !status.is_success() {
                 return Err(Error::BadResponse(status.as_u16()));
             }
-            let data = resp.bytes().await?.to_vec();
-            let Some((a, b)) = range else { return Ok(data) };
-            let want = (b - a) as usize;
+            let Some((a, b)) = range else {
+                let data = read_window(&mut resp, 0, limit).await?;
+                return if data.len() as u64 > limit { Err(Error::TooLarge) } else { Ok(data) };
+            };
+            let want = b - a;
             if status == StatusCode::PARTIAL_CONTENT {
-                if data.len() != want {
-                    return Err(Error::SizeMismatch { expected: want as u64, got: data.len() as u64 });
+                let data = read_window(&mut resp, 0, want).await?;
+                if data.len() as u64 != want {
+                    return Err(Error::SizeMismatch { expected: want, got: data.len() as u64 });
                 }
                 return Ok(data);
             }
-            // Server ignored Range and sent the whole file: cut the segment out of it.
-            if (data.len() as u64) < b {
+            // Server ignored Range and sent the whole file: skip to the segment and keep only it.
+            let mut data = read_window(&mut resp, a, want).await?;
+            if (data.len() as u64) < want {
                 return Err(Error::RangeIgnored);
             }
-            Ok(data[a as usize..b as usize].to_vec())
+            data.truncate(want as usize);
+            Ok(data)
         })
         .await
     }
+}
+
+/// Reads `resp`, discarding the first `skip` bytes, and returns what follows, stopping once it has
+/// more than `keep` bytes (so a result longer than `keep` means "there was more").
+async fn read_window(resp: &mut reqwest::Response, skip: u64, keep: u64) -> Result<Vec<u8>> {
+    let mut to_skip = skip;
+    let mut out = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        let mut c = &chunk[..];
+        let n = (to_skip.min(c.len() as u64)) as usize;
+        to_skip -= n as u64;
+        c = &c[n..];
+        let room = (keep + 1).saturating_sub(out.len() as u64) as usize;
+        out.extend_from_slice(&c[..c.len().min(room)]);
+        if out.len() as u64 > keep {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 /// Only strip an extension we would re-add; "Lesson 1.5 intro" must stay intact.
@@ -520,6 +552,19 @@ mod tests {
         assert_eq!(m.segments[2].range, None);
         assert!(!m.is_live && !m.encrypted);
         assert_eq!(audio_extension(&m), "m4a");
+    }
+
+    #[test]
+    fn only_http_urls() {
+        let text = "#EXTM3U\n#EXT-X-MAP:URI=\"file:///etc/passwd\"\n#EXTINF:6,\nfile:///home/u/.ssh/id_rsa\n\
+            #EXTINF:6,\ndata:,x\n#EXTINF:6,\nseg.ts\n#EXT-X-ENDLIST\n";
+        let Parsed::Media(m) = parse(text, &base()) else { panic!("media") };
+        assert!(m.init_segment.is_none());
+        assert_eq!(m.segments.len(), 1);
+        assert_eq!(m.segments[0].url.scheme(), "https");
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nfile:///v.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2\nv.m3u8\n";
+        let Parsed::Master { variants, .. } = parse(master, &base()) else { panic!("master") };
+        assert_eq!(variants.len(), 1);
     }
 
     #[test]

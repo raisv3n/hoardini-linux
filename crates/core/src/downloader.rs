@@ -51,7 +51,8 @@ where
             Ok(v) => return Ok(v),
             Err(e) => {
                 attempt += 1;
-                if attempt > MAX_RETRIES {
+                // Asking again gets the same oversized answer.
+                if attempt > MAX_RETRIES || matches!(e, Error::TooLarge) {
                     return Err(e);
                 }
                 tokio::time::sleep(Duration::from_secs(attempt.into())).await;
